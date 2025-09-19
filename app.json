@@ -1,0 +1,44 @@
+{
+  "expo": {
+    "name": "DSE Tracker",
+    "slug": "dse-tracker",
+    "scheme": "dsetracker",
+    "version": "1.0.0",
+    "updates": {
+      "enabled": false
+    },
+    "orientation": "portrait",
+    "ios": {
+      "supportsTablet": false
+    },
+    "android": {
+      "package": "com.yourcompany.dsetracker",
+      "permissions": [
+        "ACCESS_COARSE_LOCATION",
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_BACKGROUND_LOCATION",
+        "FOREGROUND_SERVICE",
+        "INTERNET",
+        "WAKE_LOCK",
+        "android.permission.ACCESS_COARSE_LOCATION",
+        "android.permission.ACCESS_FINE_LOCATION",
+        "android.permission.FOREGROUND_SERVICE",
+        "android.permission.FOREGROUND_SERVICE_LOCATION"
+      ]
+    },
+    "plugins": [
+      [
+        "expo-location",
+        {
+          "isAndroidForegroundServiceEnabled": true
+        }
+      ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "24219914-ba9d-45ff-a4b5-60cdc573d259"
+      }
+    },
+    "owner": "manmohanjha"
+  }
+}
