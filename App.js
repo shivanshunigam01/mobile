@@ -12,9 +12,11 @@ import {
   StatusBar,
   Animated,
   Dimensions,
+  Image,
 } from "react-native";
 import * as Location from "expo-location";
 import * as TaskManager from "expo-task-manager";
+import * as ImagePicker from "expo-image-picker";
 import { doRegister, doLogin } from "./src/auth";
 import { getProfile, clearToken, saveProfile } from "./src/storage";
 import API from "./src/api";
@@ -66,11 +68,12 @@ export default function App() {
   const [name, setName] = useState("");
   const [phone, setPhone] = useState("");
   const [password, setPassword] = useState("");
+  const [photoUri, setPhotoUri] = useState(""); // 🔹 NEW: selected image
   const [tracking, setTracking] = useState(false);
   const [status, setStatus] = useState("Idle");
   const [loading, setLoading] = useState(false);
 
-  // ✅ Persist animations
+  // Animations
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const slideAnim = useRef(new Animated.Value(50)).current;
   const pulseAnim = useRef(new Animated.Value(1)).current;
@@ -91,7 +94,8 @@ export default function App() {
 
     (async () => {
       const prof = await getProfile();
-      if (prof) setUser(prof);
+      if (prof?.user) setUser(prof.user);
+      else if (prof) setUser(prof); // backward compatibility
     })();
   }, []);
 
@@ -115,6 +119,23 @@ export default function App() {
     }
   }, [tracking]);
 
+  const pickPhoto = async () => {
+    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (status !== "granted") {
+      Alert.alert("Permission needed", "Allow gallery access to pick a photo.");
+      return;
+    }
+    const res = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      allowsEditing: true,
+      quality: 0.7,
+    });
+    if (!res.canceled && res.assets?.length) {
+      setPhotoUri(res.assets[0].uri);
+      toast("Photo selected");
+    }
+  };
+
   const doAuth = async () => {
     if (
       !phone.trim() ||
@@ -129,7 +150,7 @@ export default function App() {
     try {
       let u = null;
       if (authMode === "register") {
-        u = await doRegister({ name, phone, password });
+        u = await doRegister({ name, phone, password, photoUri }); // 🔹 send photo
         if (!u) throw new Error("No user returned from register");
         setUser(u);
         toast("Registered successfully");
@@ -214,7 +235,6 @@ export default function App() {
     toast("Logged out");
   };
 
-  // 🔐 LOGIN / REGISTER
   if (!user) {
     return (
       <View style={styles.container}>
@@ -236,13 +256,37 @@ export default function App() {
             </Text>
 
             {authMode === "register" && (
-              <TextInput
-                placeholder="Full Name"
-                placeholderTextColor="#8B949E"
-                value={name}
-                onChangeText={setName}
-                style={styles.input}
-              />
+              <>
+                <TextInput
+                  placeholder="Full Name"
+                  placeholderTextColor="#8B949E"
+                  value={name}
+                  onChangeText={setName}
+                  style={styles.input}
+                />
+
+                {/* 🔹 Pick image button + preview */}
+                <TouchableOpacity
+                  style={styles.pickButton}
+                  onPress={pickPhoto}
+                  disabled={loading}
+                >
+                  <Text style={styles.pickButtonText}>
+                    {photoUri ? "Change Photo" : "Upload DSE Photo"}
+                  </Text>
+                </TouchableOpacity>
+
+                {!!photoUri && (
+                  <View style={styles.previewWrap}>
+                    <Image
+                      source={{ uri: photoUri }}
+                      style={styles.preview}
+                      resizeMode="cover"
+                    />
+                    <Text style={styles.previewHint}>Photo selected</Text>
+                  </View>
+                )}
+              </>
             )}
 
             <TextInput
@@ -295,7 +339,7 @@ export default function App() {
     );
   }
 
-  // 📍 MAIN SCREEN (after login)
+  // MAIN (after login)
   return (
     <View style={styles.container}>
       <StatusBar barStyle="light-content" backgroundColor="#0D1117" />
@@ -378,7 +422,7 @@ export default function App() {
   );
 }
 
-// 🎨 Styles
+// Styles
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "#0D1117" },
   authContainer: { flex: 1, justifyContent: "center", paddingHorizontal: 24 },
@@ -432,6 +476,25 @@ const styles = StyleSheet.create({
   primaryButtonText: { color: "#FFFFFF", fontSize: 16, fontWeight: "600" },
   secondaryButton: { alignItems: "center", paddingVertical: 12 },
   secondaryButtonText: { color: "#58A6FF", fontSize: 14 },
+  pickButton: {
+    backgroundColor: "#30363D",
+    borderRadius: 8,
+    paddingVertical: 12,
+    alignItems: "center",
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: "#3A3F47",
+  },
+  pickButtonText: { color: "#F0F6FC", fontSize: 14 },
+  previewWrap: { alignItems: "center", marginBottom: 12 },
+  preview: {
+    width: 96,
+    height: 96,
+    borderRadius: 48,
+    borderWidth: 1,
+    borderColor: "#30363D",
+  },
+  previewHint: { color: "#8B949E", fontSize: 12, marginTop: 6 },
   header: { marginBottom: 32 },
   welcomeText: { fontSize: 18, color: "#8B949E" },
   userName: {

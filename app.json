@@ -32,7 +32,8 @@
         {
           "isAndroidForegroundServiceEnabled": true
         }
-      ]
+      ],
+      "expo-secure-store"
     ],
     "extra": {
       "eas": {

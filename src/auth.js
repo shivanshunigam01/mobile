@@ -1,41 +1,40 @@
 // src/auth.js
 import API from "./api";
-import { saveToken, saveProfile } from "./storage";
+import { saveProfile } from "./storage";
 
-function pickUser(payload) {
-  // Normalize various shapes: {user}, {data:{user}}, or whole object
-  if (!payload) return null;
-  if (payload.user) return payload.user;
-  if (payload.data?.user) return payload.data.user;
-  // sometimes backend returns the user fields at top-level
-  if (payload.id && payload.phone) return payload;
-  return null;
-}
+// Robust JSON parser for {user,token} whether it's nested or top-level
+const parseUserToken = (data) => {
+  const payload = data?.data || data; // handle ok() wrappers
+  const user = payload?.user || payload?.data?.user || null;
+  const token = payload?.token || payload?.data?.token || null;
+  return { user, token };
+};
 
-export async function doRegister({ name, phone, password }) {
-  const { data } = await API.post("/auth/register-dse", {
-    name,
-    phone,
-    password,
+export const doRegister = async ({ name, phone, password, photoUri }) => {
+  const form = new FormData();
+  form.append("name", name);
+  form.append("phone", phone);
+  form.append("password", password);
+
+  if (photoUri) {
+    const filename = photoUri.split("/").pop() || "dse.jpg";
+    const ext = (/\.(\w+)$/.exec(filename)?.[1] || "jpg").toLowerCase();
+    const type = `image/${ext === "jpg" ? "jpeg" : ext}`;
+    form.append("photo", { uri: photoUri, name: filename, type });
+  }
+
+  const { data } = await API.post("/auth/register", form, {
+    headers: { "Content-Type": "multipart/form-data" },
   });
-  const token = data?.token || data?.data?.token || null;
-  const user = pickUser(data);
-  if (!token || !user) {
-    throw new Error("Invalid register response from server");
-  }
-  await saveToken(token);
-  await saveProfile(user);
-  return user;
-}
 
-export async function doLogin({ phone, password }) {
-  const { data } = await API.post("/auth/login-dse", { phone, password });
-  const token = data?.token || data?.data?.token || null;
-  const user = pickUser(data);
-  if (!token || !user) {
-    throw new Error("Invalid login response from server");
-  }
-  await saveToken(token);
-  await saveProfile(user);
+  const { user, token } = parseUserToken(data);
+  if (user && token) await saveProfile({ user, token });
   return user;
-}
+};
+
+export const doLogin = async ({ phone, password }) => {
+  const { data } = await API.post("/auth/login", { phone, password });
+  const { user, token } = parseUserToken(data);
+  if (user && token) await saveProfile({ user, token });
+  return user;
+};
