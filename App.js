@@ -35,42 +35,9 @@ const { width } = Dimensions.get("window");
 const LOCATION_TASK = "dse-tracking-task";
 const TRACK_KEY = "dse_tracking_enabled";
 
-// ---- stationary throttle settings ----
-const STATIONARY_RADIUS_M = 30; // consider "same place" if within 30m
-const STATIONARY_MAX_MS = 10 * 60 * 1000; // 10 minutes
-
-// keys for persisting throttle state across headless/background runs
-const K_LAST_LAT = "bg_last_lat";
-const K_LAST_LON = "bg_last_lon";
-const K_LAST_MOVED_AT = "bg_last_moved_at";
-
 let OUTBOX = [];
 
-// ------------ helpers -------------
-const haversineMeters = (lat1, lon1, lat2, lon2) => {
-  if (
-    lat1 == null ||
-    lon1 == null ||
-    lat2 == null ||
-    lon2 == null ||
-    isNaN(lat1) ||
-    isNaN(lon1) ||
-    isNaN(lat2) ||
-    isNaN(lon2)
-  )
-    return Number.POSITIVE_INFINITY;
-
-  const toRad = (d) => (d * Math.PI) / 180;
-  const R = 6371000; // meters
-  const dLat = toRad(lat2 - lat1);
-  const dLon = toRad(lon2 - lon1);
-  const a =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
-  return 2 * R * Math.asin(Math.sqrt(a));
-};
-
-// -------- background task: with stationary throttle ----------
+// -------- background task (always send locations) ----------
 TaskManager.defineTask(LOCATION_TASK, async ({ data, error }) => {
   if (error) {
     console.error("Location task error:", error);
@@ -78,52 +45,6 @@ TaskManager.defineTask(LOCATION_TASK, async ({ data, error }) => {
   }
   try {
     if (data?.locations?.length) {
-      const [sLat, sLon, sMovedAt] = await Promise.all([
-        AsyncStorage.getItem(K_LAST_LAT),
-        AsyncStorage.getItem(K_LAST_LON),
-        AsyncStorage.getItem(K_LAST_MOVED_AT),
-      ]);
-
-      let lastLat = sLat ? Number(sLat) : null;
-      let lastLon = sLon ? Number(sLon) : null;
-      let lastMovedAt = sMovedAt ? Number(sMovedAt) : 0;
-
-      const now = Date.now();
-
-      const newest = data.locations[data.locations.length - 1];
-      const { latitude, longitude } = newest.coords || {};
-
-      if (
-        lastLat == null ||
-        lastLon == null ||
-        !isFinite(lastLat) ||
-        !isFinite(lastLon)
-      ) {
-        lastLat = latitude;
-        lastLon = longitude;
-        lastMovedAt = now;
-      } else {
-        const dM = haversineMeters(lastLat, lastLon, latitude, longitude);
-        if (dM > STATIONARY_RADIUS_M) {
-          lastLat = latitude;
-          lastLon = longitude;
-          lastMovedAt = now;
-        }
-      }
-
-      await Promise.all([
-        AsyncStorage.setItem(K_LAST_LAT, String(lastLat)),
-        AsyncStorage.setItem(K_LAST_LON, String(lastLon)),
-        AsyncStorage.setItem(K_LAST_MOVED_AT, String(lastMovedAt)),
-      ]);
-
-      const stationaryTooLong = now - lastMovedAt >= STATIONARY_MAX_MS;
-
-      if (stationaryTooLong) {
-        OUTBOX = [];
-        return;
-      }
-
       OUTBOX.push(...data.locations);
       if (OUTBOX.length >= 3) await flushOutbox();
     }
@@ -176,11 +97,7 @@ export default function App() {
   const [visitPhotoUri, setVisitPhotoUri] = useState("");
   const [visitLoading, setVisitLoading] = useState(false);
 
-  // foreground movement detection (for auto popup)
-  const fgWatchRef = useRef(null);
-  const lastPromptTsRef = useRef(0);
-
-  // single in-app toast (bottom banner only)
+  // toast
   const [appToast, setAppToast] = useState("");
   const appToastTimer = useRef(null);
 
@@ -210,7 +127,7 @@ export default function App() {
 
         const prof = await getProfile();
         if (prof?.user) setUser(prof.user);
-        else if (prof) setUser(prof); // legacy
+        else if (prof) setUser(prof);
 
         const flag = await AsyncStorage.getItem(TRACK_KEY);
         if (flag === "1") {
@@ -221,7 +138,6 @@ export default function App() {
             if (!started) await startBackgroundUpdates();
             setTracking(true);
             setStatus("Sharing location…");
-            startForegroundWatcher();
           } catch (e) {
             console.warn("Auto-resume failed:", e?.message || e);
           }
@@ -332,12 +248,6 @@ export default function App() {
     if (bg.status !== "granted")
       throw new Error("Background permission denied.");
 
-    await Promise.all([
-      AsyncStorage.removeItem(K_LAST_LAT),
-      AsyncStorage.removeItem(K_LAST_LON),
-      AsyncStorage.setItem(K_LAST_MOVED_AT, String(Date.now())),
-    ]);
-
     await Location.startLocationUpdatesAsync(LOCATION_TASK, {
       accuracy: Location.Accuracy.High,
       timeInterval: 10000,
@@ -357,7 +267,6 @@ export default function App() {
       await AsyncStorage.setItem(TRACK_KEY, "1");
       setTracking(true);
       setStatus("Sharing location…");
-      startForegroundWatcher();
       showToast("Tracking started");
 
       if (Platform.OS === "android") {
@@ -393,7 +302,6 @@ export default function App() {
       const isOn = await Location.hasStartedLocationUpdatesAsync(LOCATION_TASK);
       if (isOn) await Location.stopLocationUpdatesAsync(LOCATION_TASK);
       await AsyncStorage.removeItem(TRACK_KEY);
-      stopForegroundWatcher();
       setTracking(false);
       setStatus("Idle");
       showToast("Tracking stopped");
@@ -401,51 +309,6 @@ export default function App() {
       Alert.alert("Error", "Failed to stop tracking");
     } finally {
       setLoading(false);
-    }
-  };
-
-  // ------------------- foreground watcher (auto popup) -------------------
-  const startForegroundWatcher = async () => {
-    stopForegroundWatcher();
-    try {
-      const perm = await Location.getForegroundPermissionsAsync();
-      if (perm.status !== "granted") {
-        const req = await Location.requestForegroundPermissionsAsync();
-        if (req.status !== "granted") return;
-      }
-      fgWatchRef.current = await Location.watchPositionAsync(
-        {
-          accuracy: Location.Accuracy.Balanced,
-          timeInterval: 5000,
-          distanceInterval: 5,
-        },
-        (pos) => {
-          const { accuracy, speed } = pos.coords || {};
-          const stationary = (speed ?? 0) <= 1.0; // m/s
-          const goodAcc = (accuracy ?? 999) <= 50;
-
-          const now = Date.now();
-          if (
-            tracking &&
-            stationary &&
-            goodAcc &&
-            now - lastPromptTsRef.current > 180000
-          ) {
-            lastPromptTsRef.current = now;
-            setVisitVisible((v) => (v ? v : true));
-          }
-        }
-      );
-    } catch (e) {
-      console.warn("watchPosition error:", e?.message || e);
-    }
-  };
-  const stopForegroundWatcher = () => {
-    if (fgWatchRef.current) {
-      try {
-        fgWatchRef.current.remove();
-      } catch {}
-      fgWatchRef.current = null;
     }
   };
 
@@ -889,7 +752,7 @@ export default function App() {
   );
 }
 
-// ---------- Inline Toast Banner (bottom only) ----------
+// ---------- Inline Toast Banner ----------
 const ToastBanner = ({ text }) => (
   <View style={styles.toastWrap}>
     <Text style={styles.toastText}>{text}</Text>
@@ -902,7 +765,7 @@ const styles = StyleSheet.create({
   authContainer: { flex: 1, justifyContent: "center", paddingHorizontal: 24 },
   mainContainer: { flex: 1, paddingHorizontal: 24, paddingTop: 24 },
 
-  // BRAND on auth screen
+  // BRAND
   brandWrap: { alignItems: "center", marginBottom: 24 },
   brandLogo: { width: 96, height: 96, marginBottom: 8 },
   brandTitle: {
@@ -913,7 +776,7 @@ const styles = StyleSheet.create({
   },
   brandSubtitle: { color: "#8B949E", marginTop: 2 },
 
-  // toast (bottom)
+  // toast
   toastWrap: {
     position: "absolute",
     bottom: 24,
