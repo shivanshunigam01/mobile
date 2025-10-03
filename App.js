@@ -260,41 +260,36 @@ export default function App() {
     });
   };
 
-  const startTracking = async () => {
+const startTracking = async () => {
     setLoading(true);
+    const { status: perm } = await Location.requestForegroundPermissionsAsync();
+    if (perm !== "granted") {
+      Alert.alert("Error", "Location permission not granted");
+      setLoading(false);
+      return;
+    }
+
     try {
-      await startBackgroundUpdates();
-      await AsyncStorage.setItem(TRACK_KEY, "1");
+      await Location.startLocationUpdatesAsync(LOCATION_TASK, {
+        accuracy: Location.Accuracy.High,
+        timeInterval: 10000,
+        distanceInterval: 10,
+        foregroundService: {
+          notificationTitle: "DSE Tracking",
+          notificationBody: "Your location is being tracked",
+        },
+        showsBackgroundLocationIndicator: true,
+      });
       setTracking(true);
       setStatus("Sharing location…");
-      showToast("Tracking started");
-
-      if (Platform.OS === "android") {
-        Alert.alert(
-          "Battery optimization",
-          "To keep tracking active, please disable battery optimization for this app.",
-          [
-            { text: "Later" },
-            {
-              text: "Open settings",
-              onPress: () => {
-                try {
-                  IntentLauncher.startActivityAsync(
-                    IntentLauncher.ActivityAction
-                      .IGNORE_BATTERY_OPTIMIZATION_SETTINGS
-                  );
-                } catch {}
-              },
-            },
-          ]
-        );
-      }
+      toast("Tracking started");
     } catch (error) {
-      Alert.alert("Error", error?.message || "Failed to start tracking");
+      Alert.alert("Error", "Failed to start tracking");
     } finally {
       setLoading(false);
     }
   };
+
 
   const stopTracking = async () => {
     setLoading(true);
