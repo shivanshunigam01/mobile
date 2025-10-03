@@ -1,4 +1,8 @@
 // App.js
+import * as SplashScreen from "expo-splash-screen";
+import { Asset } from "expo-asset";
+SplashScreen.preventAutoHideAsync();
+
 import React, { useEffect, useState, useRef } from "react";
 import {
   View,
@@ -6,40 +10,125 @@ import {
   TextInput,
   TouchableOpacity,
   Alert,
-  ToastAndroid,
   Platform,
   StyleSheet,
   StatusBar,
   Animated,
   Dimensions,
   Image,
+  Modal,
+  Pressable,
 } from "react-native";
 import * as Location from "expo-location";
 import * as TaskManager from "expo-task-manager";
 import * as ImagePicker from "expo-image-picker";
+import AsyncStorage from "@react-native-async-storage/async-storage";
+import * as IntentLauncher from "expo-intent-launcher";
+
 import { doRegister, doLogin } from "./src/auth";
 import { getProfile, clearToken, saveProfile } from "./src/storage";
 import API from "./src/api";
 import { API_BASE } from "./src/constants";
 
-const { width, height } = Dimensions.get("window");
-
-const toast = (msg) => {
-  if (Platform.OS === "android") ToastAndroid.show(msg, ToastAndroid.SHORT);
-  else Alert.alert("", msg);
-};
+const { width } = Dimensions.get("window");
 
 const LOCATION_TASK = "dse-tracking-task";
+const TRACK_KEY = "dse_tracking_enabled";
+
+// ---- stationary throttle settings ----
+const STATIONARY_RADIUS_M = 30; // consider "same place" if within 30m
+const STATIONARY_MAX_MS = 10 * 60 * 1000; // 10 minutes
+
+// keys for persisting throttle state across headless/background runs
+const K_LAST_LAT = "bg_last_lat";
+const K_LAST_LON = "bg_last_lon";
+const K_LAST_MOVED_AT = "bg_last_moved_at";
+
 let OUTBOX = [];
 
+// ------------ helpers -------------
+const haversineMeters = (lat1, lon1, lat2, lon2) => {
+  if (
+    lat1 == null ||
+    lon1 == null ||
+    lat2 == null ||
+    lon2 == null ||
+    isNaN(lat1) ||
+    isNaN(lon1) ||
+    isNaN(lat2) ||
+    isNaN(lon2)
+  )
+    return Number.POSITIVE_INFINITY;
+
+  const toRad = (d) => (d * Math.PI) / 180;
+  const R = 6371000; // meters
+  const dLat = toRad(lat2 - lat1);
+  const dLon = toRad(lon2 - lon1);
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(a));
+};
+
+// -------- background task: with stationary throttle ----------
 TaskManager.defineTask(LOCATION_TASK, async ({ data, error }) => {
   if (error) {
     console.error("Location task error:", error);
     return;
   }
-  if (data?.locations) {
-    OUTBOX.push(...data.locations);
-    if (OUTBOX.length >= 3) await flushOutbox();
+  try {
+    if (data?.locations?.length) {
+      const [sLat, sLon, sMovedAt] = await Promise.all([
+        AsyncStorage.getItem(K_LAST_LAT),
+        AsyncStorage.getItem(K_LAST_LON),
+        AsyncStorage.getItem(K_LAST_MOVED_AT),
+      ]);
+
+      let lastLat = sLat ? Number(sLat) : null;
+      let lastLon = sLon ? Number(sLon) : null;
+      let lastMovedAt = sMovedAt ? Number(sMovedAt) : 0;
+
+      const now = Date.now();
+
+      const newest = data.locations[data.locations.length - 1];
+      const { latitude, longitude } = newest.coords || {};
+
+      if (
+        lastLat == null ||
+        lastLon == null ||
+        !isFinite(lastLat) ||
+        !isFinite(lastLon)
+      ) {
+        lastLat = latitude;
+        lastLon = longitude;
+        lastMovedAt = now;
+      } else {
+        const dM = haversineMeters(lastLat, lastLon, latitude, longitude);
+        if (dM > STATIONARY_RADIUS_M) {
+          lastLat = latitude;
+          lastLon = longitude;
+          lastMovedAt = now;
+        }
+      }
+
+      await Promise.all([
+        AsyncStorage.setItem(K_LAST_LAT, String(lastLat)),
+        AsyncStorage.setItem(K_LAST_LON, String(lastLon)),
+        AsyncStorage.setItem(K_LAST_MOVED_AT, String(lastMovedAt)),
+      ]);
+
+      const stationaryTooLong = now - lastMovedAt >= STATIONARY_MAX_MS;
+
+      if (stationaryTooLong) {
+        OUTBOX = [];
+        return;
+      }
+
+      OUTBOX.push(...data.locations);
+      if (OUTBOX.length >= 3) await flushOutbox();
+    }
+  } catch (e) {
+    console.error("BG task error:", e?.message || e);
   }
 });
 
@@ -58,26 +147,49 @@ async function flushOutbox() {
     await API.post("/tracking/locations", { points: pts });
     OUTBOX = [];
   } catch (err) {
-    console.error("Upload failed:", err.message);
+    console.error("Upload failed:", err?.message || err);
   }
 }
 
+// ======================= MAIN APP =======================
 export default function App() {
+  // auth + profile
   const [user, setUser] = useState(null);
   const [authMode, setAuthMode] = useState("login");
   const [name, setName] = useState("");
   const [phone, setPhone] = useState("");
   const [password, setPassword] = useState("");
-  const [photoUri, setPhotoUri] = useState(""); // 🔹 NEW: selected image
+  const [photoUri, setPhotoUri] = useState("");
+
+  // work/tracking
   const [tracking, setTracking] = useState(false);
   const [status, setStatus] = useState("Idle");
   const [loading, setLoading] = useState(false);
+  const [avatarBroken, setAvatarBroken] = useState(false);
 
-  // Animations
+  // pages/tabs
+  const [tab, setTab] = useState("work"); // 'work' | 'visits'
+
+  // visit modal state
+  const [visitVisible, setVisitVisible] = useState(false);
+  const [clientName, setClientName] = useState("");
+  const [visitPhotoUri, setVisitPhotoUri] = useState("");
+  const [visitLoading, setVisitLoading] = useState(false);
+
+  // foreground movement detection (for auto popup)
+  const fgWatchRef = useRef(null);
+  const lastPromptTsRef = useRef(0);
+
+  // single in-app toast (bottom banner only)
+  const [appToast, setAppToast] = useState("");
+  const appToastTimer = useRef(null);
+
+  // animations
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const slideAnim = useRef(new Animated.Value(50)).current;
   const pulseAnim = useRef(new Animated.Value(1)).current;
 
+  // ------------------- effects -------------------
   useEffect(() => {
     Animated.parallel([
       Animated.timing(fadeAnim, {
@@ -93,10 +205,35 @@ export default function App() {
     ]).start();
 
     (async () => {
-      const prof = await getProfile();
-      if (prof?.user) setUser(prof.user);
-      else if (prof) setUser(prof); // backward compatibility
+      try {
+        await Asset.fromModule(require("./assets/icon.png")).downloadAsync();
+
+        const prof = await getProfile();
+        if (prof?.user) setUser(prof.user);
+        else if (prof) setUser(prof); // legacy
+
+        const flag = await AsyncStorage.getItem(TRACK_KEY);
+        if (flag === "1") {
+          try {
+            const started = await Location.hasStartedLocationUpdatesAsync(
+              LOCATION_TASK
+            );
+            if (!started) await startBackgroundUpdates();
+            setTracking(true);
+            setStatus("Sharing location…");
+            startForegroundWatcher();
+          } catch (e) {
+            console.warn("Auto-resume failed:", e?.message || e);
+          }
+        }
+      } finally {
+        SplashScreen.hideAsync();
+      }
     })();
+
+    return () => {
+      if (appToastTimer.current) clearTimeout(appToastTimer.current);
+    };
   }, []);
 
   useEffect(() => {
@@ -119,6 +256,22 @@ export default function App() {
     }
   }, [tracking]);
 
+  // ------------------- helpers -------------------
+  const showToast = (msg) => {
+    setAppToast(msg);
+    if (appToastTimer.current) clearTimeout(appToastTimer.current);
+    appToastTimer.current = setTimeout(() => setAppToast(""), 2200);
+  };
+
+  const getInitials = (fullName = "") =>
+    fullName
+      .trim()
+      .split(/\s+/)
+      .slice(0, 2)
+      .map((s) => s[0]?.toUpperCase() || "")
+      .join("") || "D";
+
+  // ------------------- auth -------------------
   const pickPhoto = async () => {
     const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (status !== "granted") {
@@ -130,10 +283,7 @@ export default function App() {
       allowsEditing: true,
       quality: 0.7,
     });
-    if (!res.canceled && res.assets?.length) {
-      setPhotoUri(res.assets[0].uri);
-      toast("Photo selected");
-    }
+    if (!res.canceled && res.assets?.length) setPhotoUri(res.assets[0].uri);
   };
 
   const doAuth = async () => {
@@ -145,21 +295,21 @@ export default function App() {
       Alert.alert("Error", "Please fill in all fields");
       return;
     }
-
     setLoading(true);
     try {
       let u = null;
       if (authMode === "register") {
-        u = await doRegister({ name, phone, password, photoUri }); // 🔹 send photo
+        u = await doRegister({ name, phone, password, photoUri });
         if (!u) throw new Error("No user returned from register");
-        setUser(u);
-        toast("Registered successfully");
       } else {
         u = await doLogin({ phone, password });
         if (!u) throw new Error("No user returned from login");
-        setUser(u);
-        toast("Login successful");
       }
+      setUser(u);
+      setAvatarBroken(false);
+      showToast(
+        authMode === "register" ? "Registered successfully" : "Login successful"
+      );
     } catch (e) {
       const msg =
         e?.response?.data?.message || e?.message || "Authentication failed";
@@ -169,31 +319,69 @@ export default function App() {
     }
   };
 
+  // ------------------- tracking background -------------------
+  const startBackgroundUpdates = async () => {
+    const services = await Location.hasServicesEnabledAsync();
+    if (!services) throw new Error("Please enable Location services (GPS).");
+
+    const fg = await Location.requestForegroundPermissionsAsync();
+    if (fg.status !== "granted")
+      throw new Error("Foreground permission denied.");
+
+    const bg = await Location.requestBackgroundPermissionsAsync();
+    if (bg.status !== "granted")
+      throw new Error("Background permission denied.");
+
+    await Promise.all([
+      AsyncStorage.removeItem(K_LAST_LAT),
+      AsyncStorage.removeItem(K_LAST_LON),
+      AsyncStorage.setItem(K_LAST_MOVED_AT, String(Date.now())),
+    ]);
+
+    await Location.startLocationUpdatesAsync(LOCATION_TASK, {
+      accuracy: Location.Accuracy.High,
+      timeInterval: 10000,
+      distanceInterval: 10,
+      foregroundService: {
+        notificationTitle: "DSE Tracking",
+        notificationBody: "Your location is being tracked",
+      },
+      showsBackgroundLocationIndicator: true,
+    });
+  };
+
   const startTracking = async () => {
     setLoading(true);
-    const { status: perm } = await Location.requestForegroundPermissionsAsync();
-    if (perm !== "granted") {
-      Alert.alert("Error", "Location permission not granted");
-      setLoading(false);
-      return;
-    }
-
     try {
-      await Location.startLocationUpdatesAsync(LOCATION_TASK, {
-        accuracy: Location.Accuracy.High,
-        timeInterval: 10000,
-        distanceInterval: 10,
-        foregroundService: {
-          notificationTitle: "DSE Tracking",
-          notificationBody: "Your location is being tracked",
-        },
-        showsBackgroundLocationIndicator: true,
-      });
+      await startBackgroundUpdates();
+      await AsyncStorage.setItem(TRACK_KEY, "1");
       setTracking(true);
       setStatus("Sharing location…");
-      toast("Tracking started");
+      startForegroundWatcher();
+      showToast("Tracking started");
+
+      if (Platform.OS === "android") {
+        Alert.alert(
+          "Battery optimization",
+          "To keep tracking active, please disable battery optimization for this app.",
+          [
+            { text: "Later" },
+            {
+              text: "Open settings",
+              onPress: () => {
+                try {
+                  IntentLauncher.startActivityAsync(
+                    IntentLauncher.ActivityAction
+                      .IGNORE_BATTERY_OPTIMIZATION_SETTINGS
+                  );
+                } catch {}
+              },
+            },
+          ]
+        );
+      }
     } catch (error) {
-      Alert.alert("Error", "Failed to start tracking");
+      Alert.alert("Error", error?.message || "Failed to start tracking");
     } finally {
       setLoading(false);
     }
@@ -204,9 +392,11 @@ export default function App() {
     try {
       const isOn = await Location.hasStartedLocationUpdatesAsync(LOCATION_TASK);
       if (isOn) await Location.stopLocationUpdatesAsync(LOCATION_TASK);
+      await AsyncStorage.removeItem(TRACK_KEY);
+      stopForegroundWatcher();
       setTracking(false);
       setStatus("Idle");
-      toast("Tracking stopped");
+      showToast("Tracking stopped");
     } catch (error) {
       Alert.alert("Error", "Failed to stop tracking");
     } finally {
@@ -214,12 +404,137 @@ export default function App() {
     }
   };
 
+  // ------------------- foreground watcher (auto popup) -------------------
+  const startForegroundWatcher = async () => {
+    stopForegroundWatcher();
+    try {
+      const perm = await Location.getForegroundPermissionsAsync();
+      if (perm.status !== "granted") {
+        const req = await Location.requestForegroundPermissionsAsync();
+        if (req.status !== "granted") return;
+      }
+      fgWatchRef.current = await Location.watchPositionAsync(
+        {
+          accuracy: Location.Accuracy.Balanced,
+          timeInterval: 5000,
+          distanceInterval: 5,
+        },
+        (pos) => {
+          const { accuracy, speed } = pos.coords || {};
+          const stationary = (speed ?? 0) <= 1.0; // m/s
+          const goodAcc = (accuracy ?? 999) <= 50;
+
+          const now = Date.now();
+          if (
+            tracking &&
+            stationary &&
+            goodAcc &&
+            now - lastPromptTsRef.current > 180000
+          ) {
+            lastPromptTsRef.current = now;
+            setVisitVisible((v) => (v ? v : true));
+          }
+        }
+      );
+    } catch (e) {
+      console.warn("watchPosition error:", e?.message || e);
+    }
+  };
+  const stopForegroundWatcher = () => {
+    if (fgWatchRef.current) {
+      try {
+        fgWatchRef.current.remove();
+      } catch {}
+      fgWatchRef.current = null;
+    }
+  };
+
+  // ------------------- visit modal -------------------
+  const openVisitPopup = () => setVisitVisible(true);
+  const closeVisitPopup = () => {
+    setVisitVisible(false);
+    setClientName("");
+    setVisitPhotoUri("");
+  };
+
+  const takeVisitPhoto = async () => {
+    const { status } = await ImagePicker.requestCameraPermissionsAsync();
+    if (status !== "granted") {
+      Alert.alert(
+        "Permission needed",
+        "Camera access is required to take a live photo."
+      );
+      return;
+    }
+    const res = await ImagePicker.launchCameraAsync({
+      allowsEditing: false,
+      quality: 0.7,
+    });
+    if (!res.canceled && res.assets?.length)
+      setVisitPhotoUri(res.assets[0].uri);
+  };
+
+  const submitVisit = async () => {
+    if (!clientName.trim()) {
+      Alert.alert("Missing info", "Please enter the client name.");
+      return;
+    }
+    if (!visitPhotoUri) {
+      Alert.alert(
+        "Missing photo",
+        "Please capture a live photo at the location."
+      );
+      return;
+    }
+    setVisitLoading(true);
+    try {
+      const fg = await Location.requestForegroundPermissionsAsync();
+      if (fg.status !== "granted")
+        throw new Error("Location permission not granted");
+      const pos = await Location.getCurrentPositionAsync({
+        accuracy: Location.Accuracy.High,
+      });
+
+      const { latitude: lat, longitude: lon, accuracy: acc } = pos.coords || {};
+
+      const form = new FormData();
+      form.append("clientName", clientName.trim());
+      form.append("lat", String(lat));
+      form.append("lon", String(lon));
+      if (acc != null) form.append("acc", String(acc));
+      if (user?.id) form.append("dseId", String(user.id));
+      if (user?.name) form.append("dseName", String(user.name));
+      if (user?.phone) form.append("dsePhone", String(user.phone));
+
+      const filename = visitPhotoUri.split("/").pop() || "visit.jpg";
+      const ext = (filename.split(".").pop() || "jpg").toLowerCase();
+      const type =
+        ext === "jpg" || ext === "jpeg" ? "image/jpeg" : `image/${ext}`;
+      form.append("photo", { uri: visitPhotoUri, name: filename, type });
+
+      await API.post("/auth/dse/visit", form, {
+        headers: { "Content-Type": "multipart/form-data" },
+        transformRequest: (d) => d,
+      });
+
+      closeVisitPopup();
+      showToast("✅ Client visit submitted");
+    } catch (e) {
+      const msg =
+        e?.response?.data?.message || e?.message || "Failed to submit visit";
+      Alert.alert("Error", msg);
+    } finally {
+      setVisitLoading(false);
+    }
+  };
+
+  // ------------------- misc -------------------
   const testPing = async () => {
     setLoading(true);
     try {
       const r = await fetch(`${API_BASE}/tracking/ping`);
       const j = await r.json();
-      toast("Ping OK");
+      showToast("Ping OK");
       console.log("Ping:", j);
     } catch (e) {
       Alert.alert("Ping failed", e?.message || String(e));
@@ -232,26 +547,33 @@ export default function App() {
     await clearToken();
     await saveProfile(null);
     setUser(null);
-    toast("Logged out");
+    showToast("Logged out");
   };
 
+  // ------------------- AUTH SCREEN -------------------
   if (!user) {
     return (
       <View style={styles.container}>
         <StatusBar barStyle="light-content" backgroundColor="#0D1117" />
+        {!!appToast && <ToastBanner text={appToast} />}
         <Animated.View
           style={[
             styles.authContainer,
             { opacity: fadeAnim, transform: [{ translateY: slideAnim }] },
           ]}
         >
-          <View style={styles.logoContainer}>
-            <Text style={styles.logo}>DSE</Text>
-            <Text style={styles.logoSubtext}>Tracking System</Text>
+          <View style={styles.brandWrap}>
+            <Image
+              source={require("./assets/icon.png")}
+              style={styles.brandLogo}
+              resizeMode="contain"
+            />
+            <Text style={styles.brandTitle}>DSE Tracker</Text>
+            <Text style={styles.brandSubtitle}>Field Tracking System</Text>
           </View>
 
-          <View style={styles.formContainer}>
-            <Text style={styles.authTitle}>
+          <View style={styles.formCard}>
+            <Text style={styles.cardTitle}>
               {authMode === "register" ? "Create Account" : "Welcome Back"}
             </Text>
 
@@ -264,8 +586,6 @@ export default function App() {
                   onChangeText={setName}
                   style={styles.input}
                 />
-
-                {/* 🔹 Pick image button + preview */}
                 <TouchableOpacity
                   style={styles.pickButton}
                   onPress={pickPhoto}
@@ -275,7 +595,6 @@ export default function App() {
                     {photoUri ? "Change Photo" : "Upload DSE Photo"}
                   </Text>
                 </TouchableOpacity>
-
                 {!!photoUri && (
                   <View style={styles.previewWrap}>
                     <Image
@@ -339,121 +658,348 @@ export default function App() {
     );
   }
 
-  // MAIN (after login)
+  // ------------------- MAIN (TWO PAGES) -------------------
   return (
     <View style={styles.container}>
       <StatusBar barStyle="light-content" backgroundColor="#0D1117" />
+      {!!appToast && <ToastBanner text={appToast} />}
       <Animated.View
         style={[
           styles.mainContainer,
           { opacity: fadeAnim, transform: [{ translateY: slideAnim }] },
         ]}
       >
+        {/* Header with avatar + tabs */}
         <View style={styles.header}>
-          <Text style={styles.welcomeText}>Welcome back,</Text>
-          <Text style={styles.userName}>{user.name}</Text>
-          <Text style={styles.userPhone}>{user.phone}</Text>
-        </View>
-
-        <View style={styles.statusContainer}>
-          <View style={styles.statusCard}>
-            <View style={styles.statusHeader}>
-              <Text style={styles.statusLabel}>Current Status</Text>
-              <Animated.View
-                style={[
-                  styles.statusIndicator,
-                  {
-                    backgroundColor: tracking ? "#00D924" : "#8B949E",
-                    transform: tracking
-                      ? [{ scale: pulseAnim }]
-                      : [{ scale: 1 }],
-                  },
-                ]}
+          <View style={styles.headerRow}>
+            {user?.photoUrl && !avatarBroken ? (
+              <Image
+                source={{ uri: user.photoUrl }}
+                style={styles.avatar}
+                onError={() => setAvatarBroken(true)}
               />
+            ) : (
+              <View style={styles.avatarFallback}>
+                <Text style={styles.avatarFallbackText}>
+                  {getInitials(user?.name)}
+                </Text>
+              </View>
+            )}
+            <View style={{ flex: 1 }}>
+              <Text style={styles.welcomeText}>Welcome back,</Text>
+              <Text style={styles.userName}>{user?.name}</Text>
+              <Text style={styles.userPhone}>{user?.phone}</Text>
             </View>
-            <Text
-              style={[
-                styles.statusText,
-                { color: tracking ? "#00D924" : "#8B949E" },
-              ]}
+          </View>
+
+          <View style={styles.tabsWrap}>
+            <Pressable
+              onPress={() => setTab("work")}
+              style={[styles.tabBtn, tab === "work" && styles.tabBtnActive]}
             >
-              {status}
-            </Text>
+              <Text
+                style={[styles.tabText, tab === "work" && styles.tabTextActive]}
+              >
+                Work
+              </Text>
+            </Pressable>
+            <Pressable
+              onPress={() => setTab("visits")}
+              style={[styles.tabBtn, tab === "visits" && styles.tabBtnActive]}
+            >
+              <Text
+                style={[
+                  styles.tabText,
+                  tab === "visits" && styles.tabTextActive,
+                ]}
+              >
+                Visits
+              </Text>
+            </Pressable>
           </View>
         </View>
 
-        <View style={styles.actionContainer}>
-          <TouchableOpacity
-            style={[
-              styles.trackingButton,
-              tracking ? styles.stopButton : styles.startButton,
-              loading && styles.disabledButton,
-            ]}
-            onPress={tracking ? stopTracking : startTracking}
-            disabled={loading}
-          >
-            <Text style={styles.trackingButtonText}>
-              {loading
-                ? "Processing..."
-                : tracking
-                ? "🛑 Stop Working"
-                : "▶️ Start Working"}
+        {/* PAGE: WORK */}
+        {tab === "work" && (
+          <>
+            <View style={styles.card}>
+              <View style={styles.statusHeader}>
+                <Text style={styles.statusLabel}>Current Status</Text>
+                <Animated.View
+                  style={[
+                    styles.statusIndicator,
+                    {
+                      backgroundColor: tracking ? "#00D924" : "#8B949E",
+                      transform: tracking
+                        ? [{ scale: pulseAnim }]
+                        : [{ scale: 1 }],
+                    },
+                  ]}
+                />
+              </View>
+              <Text
+                style={[
+                  styles.statusText,
+                  { color: tracking ? "#00D924" : "#8B949E" },
+                ]}
+              >
+                {status}
+              </Text>
+            </View>
+
+            <View style={styles.actionContainer}>
+              <TouchableOpacity
+                style={[
+                  styles.trackingButton,
+                  tracking ? styles.stopButton : styles.startButton,
+                  loading && styles.disabledButton,
+                ]}
+                onPress={tracking ? stopTracking : startTracking}
+                disabled={loading}
+              >
+                <Text style={styles.trackingButtonText}>
+                  {loading
+                    ? "Processing..."
+                    : tracking
+                    ? "🛑 Stop Working"
+                    : "▶️ Start Working"}
+                </Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[styles.testButton, loading && styles.disabledButton]}
+                onPress={openVisitPopup}
+                disabled={loading || !tracking}
+              >
+                <Text style={styles.testButtonText}>
+                  {tracking
+                    ? "📍 Arrived at client (open form)"
+                    : "Start Working to report a visit"}
+                </Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[styles.testButton, loading && styles.disabledButton]}
+                onPress={testPing}
+                disabled={loading}
+              >
+                <Text style={styles.testButtonText}>📡 Test Connection</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[styles.logoutButton, loading && styles.disabledButton]}
+                onPress={logout}
+                disabled={loading}
+              >
+                <Text style={styles.logoutButtonText}>🚪 Logout</Text>
+              </TouchableOpacity>
+            </View>
+          </>
+        )}
+
+        {/* PAGE: VISITS */}
+        {tab === "visits" && (
+          <View style={styles.card}>
+            <Text style={styles.cardTitle}>Client Visits</Text>
+            <Text style={{ color: "#8B949E", marginBottom: 12 }}>
+              Log a new client visit from here as well.
             </Text>
-          </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.primaryButton}
+              onPress={openVisitPopup}
+            >
+              <Text style={styles.primaryButtonText}>+ New Visit</Text>
+            </TouchableOpacity>
+          </View>
+        )}
 
-          <TouchableOpacity
-            style={[styles.testButton, loading && styles.disabledButton]}
-            onPress={testPing}
-            disabled={loading}
-          >
-            <Text style={styles.testButtonText}>📡 Test Connection</Text>
-          </TouchableOpacity>
+        {/* VISIT MODAL */}
+        <Modal visible={visitVisible} transparent animationType="slide">
+          <View style={styles.modalBackdrop}>
+            <View style={styles.modalCard}>
+              <Text style={styles.modalTitle}>Client Visit</Text>
 
-          <TouchableOpacity
-            style={[styles.logoutButton, loading && styles.disabledButton]}
-            onPress={logout}
-            disabled={loading}
-          >
-            <Text style={styles.logoutButtonText}>🚪 Logout</Text>
-          </TouchableOpacity>
-        </View>
+              <TextInput
+                placeholder="Client name (required)"
+                placeholderTextColor="#8B949E"
+                value={clientName}
+                onChangeText={setClientName}
+                style={styles.input}
+              />
+
+              <View style={{ flexDirection: "row", alignItems: "center" }}>
+                <TouchableOpacity
+                  style={[styles.pickButton, { flex: 1 }]}
+                  onPress={takeVisitPhoto}
+                  disabled={visitLoading}
+                >
+                  <Text style={styles.pickButtonText}>
+                    {visitPhotoUri ? "Retake Live Photo" : "Take Live Photo"}
+                  </Text>
+                </TouchableOpacity>
+              </View>
+
+              {!!visitPhotoUri && (
+                <View style={styles.previewWrap}>
+                  <Image
+                    source={{ uri: visitPhotoUri }}
+                    style={styles.preview}
+                    resizeMode="cover"
+                  />
+                  <Text style={styles.previewHint}>Live photo ready</Text>
+                </View>
+              )}
+
+              <Text style={{ color: "#8B949E", marginBottom: 10 }}>
+                Location will be captured automatically from the device on
+                submit.
+              </Text>
+
+              <View style={{ flexDirection: "row", gap: 12 }}>
+                <TouchableOpacity
+                  style={[
+                    styles.primaryButton,
+                    { flex: 1 },
+                    (!clientName.trim() || !visitPhotoUri || visitLoading) &&
+                      styles.disabledButton,
+                  ]}
+                  onPress={submitVisit}
+                  disabled={
+                    !clientName.trim() || !visitPhotoUri || visitLoading
+                  }
+                >
+                  <Text style={styles.primaryButtonText}>
+                    {visitLoading ? "Submitting…" : "Submit"}
+                  </Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={[styles.cancelButton, { flex: 1 }]}
+                  onPress={closeVisitPopup}
+                  disabled={visitLoading}
+                >
+                  <Text style={styles.cancelButtonText}>Cancel</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          </View>
+        </Modal>
       </Animated.View>
     </View>
   );
 }
 
-// Styles
+// ---------- Inline Toast Banner (bottom only) ----------
+const ToastBanner = ({ text }) => (
+  <View style={styles.toastWrap}>
+    <Text style={styles.toastText}>{text}</Text>
+  </View>
+);
+
+// ---------- styles ----------
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "#0D1117" },
   authContainer: { flex: 1, justifyContent: "center", paddingHorizontal: 24 },
-  mainContainer: { flex: 1, paddingHorizontal: 24, paddingTop: 60 },
-  logoContainer: { alignItems: "center", marginBottom: 40 },
-  logo: {
-    fontSize: 48,
+  mainContainer: { flex: 1, paddingHorizontal: 24, paddingTop: 24 },
+
+  // BRAND on auth screen
+  brandWrap: { alignItems: "center", marginBottom: 24 },
+  brandLogo: { width: 96, height: 96, marginBottom: 8 },
+  brandTitle: {
+    fontSize: 22,
+    color: "#F0F6FC",
+    fontWeight: "700",
+    letterSpacing: 0.3,
+  },
+  brandSubtitle: { color: "#8B949E", marginTop: 2 },
+
+  // toast (bottom)
+  toastWrap: {
+    position: "absolute",
+    bottom: 24,
+    alignSelf: "center",
+    backgroundColor: "#161B22",
+    borderColor: "#2ea043",
+    borderWidth: 1,
+    paddingVertical: 8,
+    paddingHorizontal: 14,
+    borderRadius: 999,
+    zIndex: 999,
+    elevation: 5,
+  },
+  toastText: { color: "#d2ffd8", fontSize: 14, fontWeight: "600" },
+
+  // header
+  header: { marginBottom: 16 },
+  headerRow: { flexDirection: "row", alignItems: "center" },
+  avatar: {
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    borderWidth: 1,
+    borderColor: "#30363D",
+    marginRight: 16,
+    backgroundColor: "#161B22",
+  },
+  avatarFallback: {
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    borderWidth: 1,
+    borderColor: "#30363D",
+    marginRight: 16,
+    backgroundColor: "#161B22",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  avatarFallbackText: { color: "#F0F6FC", fontSize: 18, fontWeight: "700" },
+  welcomeText: { fontSize: 14, color: "#8B949E" },
+  userName: {
+    fontSize: 22,
     fontWeight: "bold",
-    color: "#58A6FF",
-    letterSpacing: 2,
+    color: "#F0F6FC",
+    marginTop: 2,
   },
-  logoSubtext: {
-    fontSize: 16,
-    color: "#8B949E",
-    marginTop: 8,
-    letterSpacing: 1,
+  userPhone: { fontSize: 14, color: "#58A6FF", marginTop: 2 },
+
+  // tabs
+  tabsWrap: {
+    flexDirection: "row",
+    backgroundColor: "#161B22",
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: "#30363D",
+    overflow: "hidden",
+    marginTop: 12,
   },
-  formContainer: {
+  tabBtn: { flex: 1, paddingVertical: 10, alignItems: "center" },
+  tabBtnActive: { backgroundColor: "#1F2630" },
+  tabText: { color: "#8B949E", fontSize: 14 },
+  tabTextActive: { color: "#F0F6FC", fontWeight: "600" },
+
+  // cards
+  formCard: {
     backgroundColor: "#161B22",
     borderRadius: 16,
     padding: 24,
     borderWidth: 1,
     borderColor: "#30363D",
   },
-  authTitle: {
-    fontSize: 24,
-    fontWeight: "600",
-    color: "#F0F6FC",
-    marginBottom: 24,
-    textAlign: "center",
+  card: {
+    backgroundColor: "#161B22",
+    borderRadius: 16,
+    padding: 20,
+    borderWidth: 1,
+    borderColor: "#30363D",
+    marginBottom: 16,
   },
+  cardTitle: {
+    fontSize: 18,
+    color: "#F0F6FC",
+    fontWeight: "600",
+    marginBottom: 12,
+  },
+
   input: {
     backgroundColor: "#21262D",
     borderRadius: 8,
@@ -465,93 +1011,105 @@ const styles = StyleSheet.create({
     borderColor: "#30363D",
     marginBottom: 16,
   },
+
   primaryButton: {
     backgroundColor: "#238636",
-    borderRadius: 8,
-    paddingVertical: 16,
+    borderRadius: 10,
+    paddingVertical: 14,
     alignItems: "center",
-    marginTop: 8,
-    marginBottom: 16,
   },
   primaryButtonText: { color: "#FFFFFF", fontSize: 16, fontWeight: "600" },
+
   secondaryButton: { alignItems: "center", paddingVertical: 12 },
   secondaryButtonText: { color: "#58A6FF", fontSize: 14 },
+
   pickButton: {
     backgroundColor: "#30363D",
     borderRadius: 8,
     paddingVertical: 12,
     alignItems: "center",
-    marginBottom: 12,
     borderWidth: 1,
     borderColor: "#3A3F47",
   },
   pickButtonText: { color: "#F0F6FC", fontSize: 14 },
   previewWrap: { alignItems: "center", marginBottom: 12 },
   preview: {
-    width: 96,
-    height: 96,
-    borderRadius: 48,
+    width: 120,
+    height: 120,
+    borderRadius: 10,
     borderWidth: 1,
     borderColor: "#30363D",
   },
   previewHint: { color: "#8B949E", fontSize: 12, marginTop: 6 },
-  header: { marginBottom: 32 },
-  welcomeText: { fontSize: 18, color: "#8B949E" },
-  userName: {
-    fontSize: 28,
-    fontWeight: "bold",
-    color: "#F0F6FC",
-    marginTop: 4,
-  },
-  userPhone: { fontSize: 16, color: "#58A6FF", marginTop: 4 },
-  statusContainer: { marginBottom: 32 },
-  statusCard: {
-    backgroundColor: "#161B22",
-    borderRadius: 12,
-    padding: 20,
-    borderWidth: 1,
-    borderColor: "#30363D",
-  },
+
   statusHeader: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
-    marginBottom: 8,
   },
   statusLabel: {
-    fontSize: 14,
+    fontSize: 12,
     color: "#8B949E",
-    textTransform: "uppercase",
     letterSpacing: 1,
+    textTransform: "uppercase",
   },
   statusIndicator: { width: 12, height: 12, borderRadius: 6 },
-  statusText: { fontSize: 24, fontWeight: "600" },
-  actionContainer: { gap: 16 },
+  statusText: { fontSize: 22, fontWeight: "600", marginTop: 6 },
+
+  actionContainer: { gap: 12, marginTop: 4 },
   trackingButton: {
     borderRadius: 12,
-    paddingVertical: 20,
+    paddingVertical: 16,
     alignItems: "center",
-    marginBottom: 8,
   },
   startButton: { backgroundColor: "#238636" },
   stopButton: { backgroundColor: "#DA3633" },
-  trackingButtonText: { color: "#FFFFFF", fontSize: 18, fontWeight: "600" },
+  trackingButtonText: { color: "#FFFFFF", fontSize: 16, fontWeight: "600" },
   testButton: {
     backgroundColor: "#21262D",
     borderRadius: 12,
-    paddingVertical: 16,
+    paddingVertical: 14,
     alignItems: "center",
     borderWidth: 1,
     borderColor: "#30363D",
   },
-  testButtonText: { color: "#58A6FF", fontSize: 16, fontWeight: "500" },
+  testButtonText: { color: "#58A6FF", fontSize: 15, fontWeight: "500" },
   logoutButton: {
     backgroundColor: "#444C56",
     borderRadius: 12,
-    paddingVertical: 16,
+    paddingVertical: 14,
     alignItems: "center",
-    marginTop: 8,
+    marginTop: 4,
   },
   logoutButtonText: { color: "#F85149", fontSize: 16, fontWeight: "600" },
   disabledButton: { opacity: 0.6 },
+
+  // modal
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.6)",
+    justifyContent: "flex-end",
+  },
+  modalCard: {
+    backgroundColor: "#161B22",
+    borderTopLeftRadius: 16,
+    borderTopRightRadius: 16,
+    padding: 20,
+    borderTopWidth: 1,
+    borderColor: "#30363D",
+  },
+  modalTitle: {
+    fontSize: 18,
+    fontWeight: "600",
+    color: "#F0F6FC",
+    marginBottom: 10,
+  },
+  cancelButton: {
+    backgroundColor: "#30363D",
+    borderRadius: 10,
+    paddingVertical: 14,
+    alignItems: "center",
+    marginLeft: 12,
+  },
+  cancelButtonText: { color: "#F0F6FC", fontSize: 16, fontWeight: "600" },
 });

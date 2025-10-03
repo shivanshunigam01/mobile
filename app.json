@@ -4,10 +4,14 @@
     "slug": "dse-tracker",
     "scheme": "dsetracker",
     "version": "1.0.0",
-    "updates": {
-      "enabled": false
-    },
     "orientation": "portrait",
+    "updates": { "enabled": false },
+    "icon": "./assets/icon.png",
+    "splash": {
+      "image": "./assets/icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#0D1117"
+    },
     "ios": {
       "supportsTablet": false
     },
@@ -24,15 +28,14 @@
         "android.permission.ACCESS_FINE_LOCATION",
         "android.permission.FOREGROUND_SERVICE",
         "android.permission.FOREGROUND_SERVICE_LOCATION"
-      ]
+      ],
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/icon.png",
+        "backgroundColor": "#0D1117"
+      }
     },
     "plugins": [
-      [
-        "expo-location",
-        {
-          "isAndroidForegroundServiceEnabled": true
-        }
-      ],
+      ["expo-location", { "isAndroidForegroundServiceEnabled": true }],
       "expo-secure-store"
     ],
     "extra": {

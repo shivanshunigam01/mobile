@@ -5,20 +5,25 @@
   "scripts": {
     "start": "expo start",
     "android": "expo run:android",
-    "build-apk": "eas build -p android --profile preview"
+    "build-apk": "eas build -p android --profile preview",
+    "ios": "expo run:ios"
   },
   "dependencies": {
     "@react-native-async-storage/async-storage": "2.2.0",
     "axios": "^1.12.2",
     "expo": "^54.0.12",
+    "expo-asset": "^12.0.9",
     "expo-constants": "~18.0.9",
     "expo-device": "~8.0.9",
     "expo-image-picker": "~17.0.8",
+    "expo-intent-launcher": "~13.0.7",
     "expo-location": "~19.0.7",
     "expo-notifications": "~0.32.12",
     "expo-secure-store": "~15.0.7",
+    "expo-splash-screen": "^31.0.10",
     "expo-task-manager": "~14.0.7",
     "react": "19.1.0",
     "react-native": "0.81.4"
-  }
+  },
+  "version": "1.0.0"
 }

@@ -18,13 +18,17 @@ export const doRegister = async ({ name, phone, password, photoUri }) => {
 
   if (photoUri) {
     const filename = photoUri.split("/").pop() || "dse.jpg";
-    const ext = (/\.(\w+)$/.exec(filename)?.[1] || "jpg").toLowerCase();
-    const type = `image/${ext === "jpg" ? "jpeg" : ext}`;
+    const ext = filename.split(".").pop().toLowerCase();
+    const type =
+      ext === "jpg" || ext === "jpeg" ? "image/jpeg" : `image/${ext}`;
+
     form.append("photo", { uri: photoUri, name: filename, type });
   }
 
-  const { data } = await API.post("/auth/register", form, {
+  // ✅ Use the DSE endpoint
+  const { data } = await API.post("/auth/register-dse", form, {
     headers: { "Content-Type": "multipart/form-data" },
+    transformRequest: (d) => d, // keep FormData intact in RN
   });
 
   const { user, token } = parseUserToken(data);
@@ -33,7 +37,8 @@ export const doRegister = async ({ name, phone, password, photoUri }) => {
 };
 
 export const doLogin = async ({ phone, password }) => {
-  const { data } = await API.post("/auth/login", { phone, password });
+  // ✅ Use the DSE login endpoint
+  const { data } = await API.post("/auth/login-dse", { phone, password });
   const { user, token } = parseUserToken(data);
   if (user && token) await saveProfile({ user, token });
   return user;
