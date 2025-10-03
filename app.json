@@ -30,7 +30,7 @@
         "android.permission.FOREGROUND_SERVICE_LOCATION"
       ],
       "adaptiveIcon": {
-        "foregroundImage": "./assets/icon.png",
+        "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#0D1117"
       }
     },
