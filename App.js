@@ -260,35 +260,45 @@ export default function App() {
     });
   };
 
-const startTracking = async () => {
-    setLoading(true);
-    const { status: perm } = await Location.requestForegroundPermissionsAsync();
-    if (perm !== "granted") {
-      Alert.alert("Error", "Location permission not granted");
-      setLoading(false);
-      return;
-    }
+ const startTracking = async () => {
+  setLoading(true);
+  try {
+    const services = await Location.hasServicesEnabledAsync();
+    if (!services) throw new Error("Please enable Location services (GPS).");
 
-    try {
-      await Location.startLocationUpdatesAsync(LOCATION_TASK, {
-        accuracy: Location.Accuracy.High,
-        timeInterval: 10000,
-        distanceInterval: 10,
-        foregroundService: {
-          notificationTitle: "DSE Tracking",
-          notificationBody: "Your location is being tracked",
-        },
-        showsBackgroundLocationIndicator: true,
-      });
-      setTracking(true);
-      setStatus("Sharing location…");
-      toast("Tracking started");
-    } catch (error) {
-      Alert.alert("Error", "Failed to start tracking");
-    } finally {
-      setLoading(false);
-    }
-  };
+    // Foreground permission
+    const fg = await Location.requestForegroundPermissionsAsync();
+    if (fg.status !== "granted") throw new Error("Foreground permission not granted");
+
+    // Background permission (needed for Android 10+)
+    const bg = await Location.requestBackgroundPermissionsAsync();
+    if (bg.status !== "granted") throw new Error("Background permission not granted");
+
+    // Start background tracking task
+    await Location.startLocationUpdatesAsync(LOCATION_TASK, {
+      accuracy: Location.Accuracy.High,
+      timeInterval: 10000,     // every 10 seconds
+      distanceInterval: 10,    // or every 10 meters
+      foregroundService: {
+        notificationTitle: "DSE Tracking",
+        notificationBody: "Your location is being tracked",
+      },
+      showsBackgroundLocationIndicator: true,
+    });
+
+    // Save flag so auto-resume works
+    await AsyncStorage.setItem(TRACK_KEY, "1");
+
+    setTracking(true);
+    setStatus("Sharing location…");
+    showToast("Tracking started ✅");
+  } catch (error) {
+    console.error("Tracking error:", error);
+    Alert.alert("Error", error?.message || "Failed to start tracking");
+  } finally {
+    setLoading(false);
+  }
+};
 
 
   const stopTracking = async () => {
