@@ -1,16 +1,21 @@
 // src/api.js
 import axios from "axios";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import { API_BASE } from "./constants";
-import { getToken } from "./storage";
 
 const API = axios.create({
-  baseURL: API_BASE,
-  timeout: 10000,
+  baseURL: API_BASE + "/api", // adjust if needed
 });
 
+// automatically attach token
 API.interceptors.request.use(async (config) => {
-  const token = await getToken();
-  if (token) config.headers.Authorization = `Bearer ${token}`;
+  const profileStr = await AsyncStorage.getItem("profile");
+  if (profileStr) {
+    const profile = JSON.parse(profileStr);
+    if (profile?.token) {
+      config.headers.Authorization = `Bearer ${profile.token}`;
+    }
+  }
   return config;
 });
 

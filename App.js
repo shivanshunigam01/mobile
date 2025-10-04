@@ -18,6 +18,7 @@ import {
   Image,
   Modal,
   Pressable,
+  ScrollView,
 } from "react-native";
 import * as Location from "expo-location";
 import * as TaskManager from "expo-task-manager";
@@ -260,46 +261,47 @@ export default function App() {
     });
   };
 
- const startTracking = async () => {
-  setLoading(true);
-  try {
-    const services = await Location.hasServicesEnabledAsync();
-    if (!services) throw new Error("Please enable Location services (GPS).");
+  const startTracking = async () => {
+    setLoading(true);
+    try {
+      const services = await Location.hasServicesEnabledAsync();
+      if (!services) throw new Error("Please enable Location services (GPS).");
 
-    // Foreground permission
-    const fg = await Location.requestForegroundPermissionsAsync();
-    if (fg.status !== "granted") throw new Error("Foreground permission not granted");
+      // Foreground permission
+      const fg = await Location.requestForegroundPermissionsAsync();
+      if (fg.status !== "granted")
+        throw new Error("Foreground permission not granted");
 
-    // Background permission (needed for Android 10+)
-    const bg = await Location.requestBackgroundPermissionsAsync();
-    if (bg.status !== "granted") throw new Error("Background permission not granted");
+      // Background permission (needed for Android 10+)
+      const bg = await Location.requestBackgroundPermissionsAsync();
+      if (bg.status !== "granted")
+        throw new Error("Background permission not granted");
 
-    // Start background tracking task
-    await Location.startLocationUpdatesAsync(LOCATION_TASK, {
-      accuracy: Location.Accuracy.High,
-      timeInterval: 10000,     // every 10 seconds
-      distanceInterval: 10,    // or every 10 meters
-      foregroundService: {
-        notificationTitle: "DSE Tracking",
-        notificationBody: "Your location is being tracked",
-      },
-      showsBackgroundLocationIndicator: true,
-    });
+      // Start background tracking task
+      await Location.startLocationUpdatesAsync(LOCATION_TASK, {
+        accuracy: Location.Accuracy.High,
+        timeInterval: 10000, // every 10 seconds
+        distanceInterval: 10, // or every 10 meters
+        foregroundService: {
+          notificationTitle: "DSE Tracking",
+          notificationBody: "Your location is being tracked",
+        },
+        showsBackgroundLocationIndicator: true,
+      });
 
-    // Save flag so auto-resume works
-    await AsyncStorage.setItem(TRACK_KEY, "1");
+      // Save flag so auto-resume works
+      await AsyncStorage.setItem(TRACK_KEY, "1");
 
-    setTracking(true);
-    setStatus("Sharing location…");
-    showToast("Tracking started ✅");
-  } catch (error) {
-    console.error("Tracking error:", error);
-    Alert.alert("Error", error?.message || "Failed to start tracking");
-  } finally {
-    setLoading(false);
-  }
-};
-
+      setTracking(true);
+      setStatus("Sharing location…");
+      showToast("Tracking started ✅");
+    } catch (error) {
+      console.error("Tracking error:", error);
+      Alert.alert("Error", error?.message || "Failed to start tracking");
+    } finally {
+      setLoading(false);
+    }
+  };
 
   const stopTracking = async () => {
     setLoading(true);
@@ -400,7 +402,7 @@ export default function App() {
   const testPing = async () => {
     setLoading(true);
     try {
-      const r = await fetch(`${API_BASE}/tracking/ping`);
+      const r = await fetch(`${API_BASE}/api/tracking/ping`);
       const j = await r.json();
       showToast("Ping OK");
       console.log("Ping:", j);
@@ -424,104 +426,106 @@ export default function App() {
       <View style={styles.container}>
         <StatusBar barStyle="light-content" backgroundColor="#0D1117" />
         {!!appToast && <ToastBanner text={appToast} />}
-        <Animated.View
-          style={[
-            styles.authContainer,
-            { opacity: fadeAnim, transform: [{ translateY: slideAnim }] },
-          ]}
-        >
-          <View style={styles.brandWrap}>
-            <Image
-              source={require("./assets/icon.png")}
-              style={styles.brandLogo}
-              resizeMode="contain"
-            />
-            <Text style={styles.brandTitle}>DSE Tracker</Text>
-            <Text style={styles.brandSubtitle}>Field Tracking System</Text>
-          </View>
+        <ScrollView contentContainerStyle={styles.scrollContent}>
+          <Animated.View
+            style={[
+              styles.authContainer,
+              { opacity: fadeAnim, transform: [{ translateY: slideAnim }] },
+            ]}
+          >
+            <View style={styles.brandWrap}>
+              <Image
+                source={require("./assets/icon.png")}
+                style={styles.brandLogo}
+                resizeMode="contain"
+              />
+              <Text style={styles.brandTitle}>DSE Tracker</Text>
+              <Text style={styles.brandSubtitle}>Field Tracking System</Text>
+            </View>
 
-          <View style={styles.formCard}>
-            <Text style={styles.cardTitle}>
-              {authMode === "register" ? "Create Account" : "Welcome Back"}
-            </Text>
-
-            {authMode === "register" && (
-              <>
-                <TextInput
-                  placeholder="Full Name"
-                  placeholderTextColor="#8B949E"
-                  value={name}
-                  onChangeText={setName}
-                  style={styles.input}
-                />
-                <TouchableOpacity
-                  style={styles.pickButton}
-                  onPress={pickPhoto}
-                  disabled={loading}
-                >
-                  <Text style={styles.pickButtonText}>
-                    {photoUri ? "Change Photo" : "Upload DSE Photo"}
-                  </Text>
-                </TouchableOpacity>
-                {!!photoUri && (
-                  <View style={styles.previewWrap}>
-                    <Image
-                      source={{ uri: photoUri }}
-                      style={styles.preview}
-                      resizeMode="cover"
-                    />
-                    <Text style={styles.previewHint}>Photo selected</Text>
-                  </View>
-                )}
-              </>
-            )}
-
-            <TextInput
-              placeholder="Phone Number"
-              placeholderTextColor="#8B949E"
-              value={phone}
-              onChangeText={setPhone}
-              style={styles.input}
-              keyboardType="phone-pad"
-            />
-
-            <TextInput
-              placeholder="Password"
-              placeholderTextColor="#8B949E"
-              secureTextEntry
-              value={password}
-              onChangeText={setPassword}
-              style={styles.input}
-            />
-
-            <TouchableOpacity
-              style={[styles.primaryButton, loading && styles.disabledButton]}
-              onPress={doAuth}
-              disabled={loading}
-            >
-              <Text style={styles.primaryButtonText}>
-                {loading
-                  ? "Please wait..."
-                  : authMode === "register"
-                  ? "Create Account"
-                  : "Sign In"}
+            <View style={styles.formCard}>
+              <Text style={styles.cardTitle}>
+                {authMode === "register" ? "Create Account" : "Welcome Back"}
               </Text>
-            </TouchableOpacity>
 
-            <TouchableOpacity
-              style={styles.secondaryButton}
-              onPress={() =>
-                setAuthMode(authMode === "register" ? "login" : "register")
-              }
-            >
-              <Text style={styles.secondaryButtonText}>
-                {authMode === "register"
-                  ? "Already have an account? Sign In"
-                  : "New user? Create Account"}
-              </Text>
-            </TouchableOpacity>
-          </View>
-        </Animated.View>
+              {authMode === "register" && (
+                <>
+                  <TextInput
+                    placeholder="Full Name"
+                    placeholderTextColor="#8B949E"
+                    value={name}
+                    onChangeText={setName}
+                    style={styles.input}
+                  />
+                  <TouchableOpacity
+                    style={styles.pickButton}
+                    onPress={pickPhoto}
+                    disabled={loading}
+                  >
+                    <Text style={styles.pickButtonText}>
+                      {photoUri ? "Change Photo" : "Upload DSE Photo"}
+                    </Text>
+                  </TouchableOpacity>
+                  {!!photoUri && (
+                    <View style={styles.previewWrap}>
+                      <Image
+                        source={{ uri: photoUri }}
+                        style={styles.preview}
+                        resizeMode="cover"
+                      />
+                      <Text style={styles.previewHint}>Photo selected</Text>
+                    </View>
+                  )}
+                </>
+              )}
+
+              <TextInput
+                placeholder="Phone Number"
+                placeholderTextColor="#8B949E"
+                value={phone}
+                onChangeText={setPhone}
+                style={styles.input}
+                keyboardType="phone-pad"
+              />
+
+              <TextInput
+                placeholder="Password"
+                placeholderTextColor="#8B949E"
+                secureTextEntry
+                value={password}
+                onChangeText={setPassword}
+                style={styles.input}
+              />
+
+              <TouchableOpacity
+                style={[styles.primaryButton, loading && styles.disabledButton]}
+                onPress={doAuth}
+                disabled={loading}
+              >
+                <Text style={styles.primaryButtonText}>
+                  {loading
+                    ? "Please wait..."
+                    : authMode === "register"
+                    ? "Create Account"
+                    : "Sign In"}
+                </Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={styles.secondaryButton}
+                onPress={() =>
+                  setAuthMode(authMode === "register" ? "login" : "register")
+                }
+              >
+                <Text style={styles.secondaryButtonText}>
+                  {authMode === "register"
+                    ? "Already have an account? Sign In"
+                    : "New user? Create Account"}
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </Animated.View>
+        </ScrollView>
       </View>
     );
   }
@@ -587,168 +591,182 @@ export default function App() {
           </View>
         </View>
 
-        {/* PAGE: WORK */}
-        {tab === "work" && (
-          <>
-            <View style={styles.card}>
-              <View style={styles.statusHeader}>
-                <Text style={styles.statusLabel}>Current Status</Text>
-                <Animated.View
+        <ScrollView contentContainerStyle={styles.scrollContent}>
+          {/* PAGE: WORK */}
+          {tab === "work" && (
+            <>
+              <View style={styles.card}>
+                <View style={styles.statusHeader}>
+                  <Text style={styles.statusLabel}>Current Status</Text>
+                  <Animated.View
+                    style={[
+                      styles.statusIndicator,
+                      {
+                        backgroundColor: tracking ? "#00D924" : "#8B949E",
+                        transform: tracking
+                          ? [{ scale: pulseAnim }]
+                          : [{ scale: 1 }],
+                      },
+                    ]}
+                  />
+                </View>
+                <Text
                   style={[
-                    styles.statusIndicator,
-                    {
-                      backgroundColor: tracking ? "#00D924" : "#8B949E",
-                      transform: tracking
-                        ? [{ scale: pulseAnim }]
-                        : [{ scale: 1 }],
-                    },
+                    styles.statusText,
+                    { color: tracking ? "#00D924" : "#8B949E" },
                   ]}
-                />
+                >
+                  {status}
+                </Text>
               </View>
-              <Text
-                style={[
-                  styles.statusText,
-                  { color: tracking ? "#00D924" : "#8B949E" },
-                ]}
-              >
-                {status}
+
+              <View style={styles.actionContainer}>
+                <TouchableOpacity
+                  style={[
+                    styles.trackingButton,
+                    tracking ? styles.stopButton : styles.startButton,
+                    loading && styles.disabledButton,
+                  ]}
+                  onPress={tracking ? stopTracking : startTracking}
+                  disabled={loading}
+                >
+                  <Text style={styles.trackingButtonText}>
+                    {loading
+                      ? "Processing..."
+                      : tracking
+                      ? "🛑 Stop Working"
+                      : "▶️ Start Working"}
+                  </Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={[
+                    styles.testButton,
+                    (!tracking || loading) && styles.disabledButton,
+                  ]}
+                  onPress={openVisitPopup}
+                  disabled={loading || !tracking}
+                >
+                  <Text style={styles.testButtonText}>
+                    {tracking
+                      ? "📍 Arrived at client (open form)"
+                      : "Start Working to report a visit"}
+                  </Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={[styles.testButton, loading && styles.disabledButton]}
+                  onPress={testPing}
+                  disabled={loading}
+                >
+                  <Text style={styles.testButtonText}>📡 Test Connection</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={[
+                    styles.logoutButton,
+                    loading && styles.disabledButton,
+                  ]}
+                  onPress={logout}
+                  disabled={loading}
+                >
+                  <Text style={styles.logoutButtonText}>🚪 Logout</Text>
+                </TouchableOpacity>
+              </View>
+            </>
+          )}
+
+          {/* PAGE: VISITS */}
+          {tab === "visits" && (
+            <View style={styles.card}>
+              <Text style={styles.cardTitle}>Client Visits</Text>
+              <Text style={{ color: "#8B949E", marginBottom: 12 }}>
+                Log a new client visit from here as well.
               </Text>
-            </View>
-
-            <View style={styles.actionContainer}>
               <TouchableOpacity
-                style={[
-                  styles.trackingButton,
-                  tracking ? styles.stopButton : styles.startButton,
-                  loading && styles.disabledButton,
-                ]}
-                onPress={tracking ? stopTracking : startTracking}
-                disabled={loading}
-              >
-                <Text style={styles.trackingButtonText}>
-                  {loading
-                    ? "Processing..."
-                    : tracking
-                    ? "🛑 Stop Working"
-                    : "▶️ Start Working"}
-                </Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={[styles.testButton, loading && styles.disabledButton]}
+                style={styles.primaryButton}
                 onPress={openVisitPopup}
-                disabled={loading || !tracking}
               >
-                <Text style={styles.testButtonText}>
-                  {tracking
-                    ? "📍 Arrived at client (open form)"
-                    : "Start Working to report a visit"}
-                </Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={[styles.testButton, loading && styles.disabledButton]}
-                onPress={testPing}
-                disabled={loading}
-              >
-                <Text style={styles.testButtonText}>📡 Test Connection</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={[styles.logoutButton, loading && styles.disabledButton]}
-                onPress={logout}
-                disabled={loading}
-              >
-                <Text style={styles.logoutButtonText}>🚪 Logout</Text>
+                <Text style={styles.primaryButtonText}>+ New Visit</Text>
               </TouchableOpacity>
             </View>
-          </>
-        )}
-
-        {/* PAGE: VISITS */}
-        {tab === "visits" && (
-          <View style={styles.card}>
-            <Text style={styles.cardTitle}>Client Visits</Text>
-            <Text style={{ color: "#8B949E", marginBottom: 12 }}>
-              Log a new client visit from here as well.
-            </Text>
-            <TouchableOpacity
-              style={styles.primaryButton}
-              onPress={openVisitPopup}
-            >
-              <Text style={styles.primaryButtonText}>+ New Visit</Text>
-            </TouchableOpacity>
-          </View>
-        )}
+          )}
+        </ScrollView>
 
         {/* VISIT MODAL */}
-        <Modal visible={visitVisible} transparent animationType="slide">
+        <Modal visible={visitVisible} transparent animationType="fade">
           <View style={styles.modalBackdrop}>
             <View style={styles.modalCard}>
-              <Text style={styles.modalTitle}>Client Visit</Text>
+              <ScrollView showsVerticalScrollIndicator={false}>
+                <Text style={styles.modalTitle}>Client Visit</Text>
 
-              <TextInput
-                placeholder="Client name (required)"
-                placeholderTextColor="#8B949E"
-                value={clientName}
-                onChangeText={setClientName}
-                style={styles.input}
-              />
+                <TextInput
+                  placeholder="Client name (required)"
+                  placeholderTextColor="#8B949E"
+                  value={clientName}
+                  onChangeText={setClientName}
+                  style={styles.input}
+                />
 
-              <View style={{ flexDirection: "row", alignItems: "center" }}>
                 <TouchableOpacity
-                  style={[styles.pickButton, { flex: 1 }]}
+                  style={styles.cameraButton}
                   onPress={takeVisitPhoto}
                   disabled={visitLoading}
                 >
-                  <Text style={styles.pickButtonText}>
-                    {visitPhotoUri ? "Retake Live Photo" : "Take Live Photo"}
+                  <Text style={styles.cameraButtonText}>
+                    {visitPhotoUri
+                      ? "📷 Retake Live Photo"
+                      : "📷 Take Live Photo"}
                   </Text>
                 </TouchableOpacity>
-              </View>
 
-              {!!visitPhotoUri && (
-                <View style={styles.previewWrap}>
-                  <Image
-                    source={{ uri: visitPhotoUri }}
-                    style={styles.preview}
-                    resizeMode="cover"
-                  />
-                  <Text style={styles.previewHint}>Live photo ready</Text>
+                {!!visitPhotoUri && (
+                  <View style={styles.photoPreviewWrap}>
+                    <Image
+                      source={{ uri: visitPhotoUri }}
+                      style={styles.photoPreview}
+                      resizeMode="cover"
+                    />
+                    <Text style={styles.photoPreviewText}>
+                      Live photo ready
+                    </Text>
+                  </View>
+                )}
+
+                <Text style={styles.infoText}>
+                  Location will be captured automatically from the device on
+                  submit.
+                </Text>
+
+                <View style={styles.modalButtons}>
+                  <TouchableOpacity
+                    style={[
+                      styles.submitButton,
+                      (!clientName.trim() || !visitPhotoUri || visitLoading) &&
+                        styles.disabledButton,
+                    ]}
+                    onPress={submitVisit}
+                    disabled={
+                      !clientName.trim() || !visitPhotoUri || visitLoading
+                    }
+                  >
+                    <Text style={styles.submitButtonText}>
+                      {visitLoading ? "Submitting…" : "Submit"}
+                    </Text>
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    style={[
+                      styles.cancelButton,
+                      visitLoading && styles.disabledButton,
+                    ]}
+                    onPress={closeVisitPopup}
+                    disabled={visitLoading}
+                  >
+                    <Text style={styles.cancelButtonText}>Cancel</Text>
+                  </TouchableOpacity>
                 </View>
-              )}
-
-              <Text style={{ color: "#8B949E", marginBottom: 10 }}>
-                Location will be captured automatically from the device on
-                submit.
-              </Text>
-
-              <View style={{ flexDirection: "row", gap: 12 }}>
-                <TouchableOpacity
-                  style={[
-                    styles.primaryButton,
-                    { flex: 1 },
-                    (!clientName.trim() || !visitPhotoUri || visitLoading) &&
-                      styles.disabledButton,
-                  ]}
-                  onPress={submitVisit}
-                  disabled={
-                    !clientName.trim() || !visitPhotoUri || visitLoading
-                  }
-                >
-                  <Text style={styles.primaryButtonText}>
-                    {visitLoading ? "Submitting…" : "Submit"}
-                  </Text>
-                </TouchableOpacity>
-
-                <TouchableOpacity
-                  style={[styles.cancelButton, { flex: 1 }]}
-                  onPress={closeVisitPopup}
-                  disabled={visitLoading}
-                >
-                  <Text style={styles.cancelButtonText}>Cancel</Text>
-                </TouchableOpacity>
-              </View>
+              </ScrollView>
             </View>
           </View>
         </Modal>
@@ -767,6 +785,7 @@ const ToastBanner = ({ text }) => (
 // ---------- styles ----------
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "#0D1117" },
+  scrollContent: { flexGrow: 1, paddingBottom: 20 },
   authContainer: { flex: 1, justifyContent: "center", paddingHorizontal: 24 },
   mainContainer: { flex: 1, paddingHorizontal: 24, paddingTop: 24 },
 
@@ -789,8 +808,8 @@ const styles = StyleSheet.create({
     backgroundColor: "#161B22",
     borderColor: "#2ea043",
     borderWidth: 1,
-    paddingVertical: 8,
-    paddingHorizontal: 14,
+    paddingVertical: 10,
+    paddingHorizontal: 18,
     borderRadius: 999,
     zIndex: 999,
     elevation: 5,
@@ -872,7 +891,7 @@ const styles = StyleSheet.create({
     backgroundColor: "#21262D",
     borderRadius: 8,
     paddingHorizontal: 16,
-    paddingVertical: 12,
+    paddingVertical: 14,
     fontSize: 16,
     color: "#F0F6FC",
     borderWidth: 1,
@@ -898,9 +917,10 @@ const styles = StyleSheet.create({
     alignItems: "center",
     borderWidth: 1,
     borderColor: "#3A3F47",
+    marginBottom: 16,
   },
   pickButtonText: { color: "#F0F6FC", fontSize: 14 },
-  previewWrap: { alignItems: "center", marginBottom: 12 },
+  previewWrap: { alignItems: "center", marginBottom: 16 },
   preview: {
     width: 120,
     height: 120,
@@ -950,34 +970,104 @@ const styles = StyleSheet.create({
     marginTop: 4,
   },
   logoutButtonText: { color: "#F85149", fontSize: 16, fontWeight: "600" },
-  disabledButton: { opacity: 0.6 },
+  disabledButton: { opacity: 0.5 },
 
-  // modal
   modalBackdrop: {
     flex: 1,
-    backgroundColor: "rgba(0,0,0,0.6)",
-    justifyContent: "flex-end",
+    backgroundColor: "rgba(0,0,0,0.8)",
+    justifyContent: "center", // 👈 center vertically
+    alignItems: "center", // 👈 center horizontally
   },
+
   modalCard: {
     backgroundColor: "#161B22",
-    borderTopLeftRadius: 16,
-    borderTopRightRadius: 16,
-    padding: 20,
-    borderTopWidth: 1,
+    borderRadius: 20, // 👈 same border for all corners
+    padding: 24,
+    borderWidth: 1,
     borderColor: "#30363D",
+    width: "90%", // 👈 make width responsive
+    maxHeight: "80%", // 👈 keep it scrollable on small screens
   },
   modalTitle: {
-    fontSize: 18,
-    fontWeight: "600",
+    fontSize: 20,
+    fontWeight: "700",
     color: "#F0F6FC",
-    marginBottom: 10,
+    marginBottom: 20,
+    textAlign: "center",
   },
+
+  cameraButton: {
+    backgroundColor: "#1F6FEB",
+    borderRadius: 10,
+    paddingVertical: 14,
+    alignItems: "center",
+    marginBottom: 16,
+  },
+  cameraButtonText: {
+    color: "#FFFFFF",
+    fontSize: 16,
+    fontWeight: "600",
+  },
+
+  photoPreviewWrap: {
+    alignItems: "center",
+    marginBottom: 16,
+    backgroundColor: "#0D1117",
+    borderRadius: 12,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: "#30363D",
+  },
+  photoPreview: {
+    width: 200,
+    height: 200,
+    borderRadius: 12,
+    borderWidth: 2,
+    borderColor: "#238636",
+  },
+  photoPreviewText: {
+    color: "#2ea043",
+    fontSize: 14,
+    fontWeight: "600",
+    marginTop: 10,
+  },
+
+  infoText: {
+    color: "#8B949E",
+    fontSize: 13,
+    lineHeight: 18,
+    marginBottom: 20,
+    textAlign: "center",
+  },
+
+  modalButtons: {
+    flexDirection: "row",
+    gap: 12,
+  },
+
+  submitButton: {
+    flex: 1,
+    backgroundColor: "#238636",
+    borderRadius: 10,
+    paddingVertical: 14,
+    alignItems: "center",
+  },
+  submitButtonText: {
+    color: "#FFFFFF",
+    fontSize: 16,
+    fontWeight: "600",
+  },
+
   cancelButton: {
+    flex: 1,
     backgroundColor: "#30363D",
     borderRadius: 10,
     paddingVertical: 14,
     alignItems: "center",
-    marginLeft: 12,
   },
-  cancelButtonText: { color: "#F0F6FC", fontSize: 16, fontWeight: "600" },
+  cancelButtonText: {
+    color: "#F0F6FC",
+    fontSize: 16,
+    fontWeight: "600",
+  },
 });

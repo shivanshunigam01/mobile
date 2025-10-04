@@ -5,7 +5,9 @@
     "scheme": "dsetracker",
     "version": "1.0.0",
     "orientation": "portrait",
-    "updates": { "enabled": false },
+    "updates": {
+      "enabled": false
+    },
     "icon": "./assets/icon.png",
     "splash": {
       "image": "./assets/icon.png",
@@ -35,14 +37,18 @@
       }
     },
     "plugins": [
-      ["expo-location", { "isAndroidForegroundServiceEnabled": true }],
+      [
+        "expo-location",
+        {
+          "isAndroidForegroundServiceEnabled": true
+        }
+      ],
       "expo-secure-store"
     ],
     "extra": {
       "eas": {
-        "projectId": "24219914-ba9d-45ff-a4b5-60cdc573d259"
+        "projectId": "5c9fd57d-a2cc-4da2-ad2d-aef9bb6e950e"
       }
-    },
-    "owner": "manmohanjha"
+    }
   }
 }
