@@ -8,7 +8,7 @@ import React, { useEffect, useState, useRef } from "react";
 import {
   View,
   Text,
-  TextInput,  
+  TextInput,
   TouchableOpacity,
   Alert,
   Platform,
@@ -328,6 +328,14 @@ export default function App() {
       const isOn = await Location.hasStartedLocationUpdatesAsync(LOCATION_TASK);
       if (isOn) await Location.stopLocationUpdatesAsync(LOCATION_TASK);
       await AsyncStorage.removeItem(TRACK_KEY);
+
+      // 🚀 Mark instantly offline on backend
+      try {
+        await API.post("/tracking/offline", { userId: user?.id });
+      } catch (e) {
+        console.warn("Failed to mark offline:", e?.message);
+      }
+
       setTracking(false);
       setStatus("Idle");
       showToast("Tracking stopped");
@@ -337,6 +345,8 @@ export default function App() {
       setLoading(false);
     }
   };
+
+ 
 
   // ------------------- visit modal -------------------
   const openVisitPopup = () => setVisitVisible(true);
@@ -439,6 +449,12 @@ export default function App() {
     showToast("Logged out");
   };
 
+   useEffect(() => {
+    const interval = setInterval(() => {
+      flushOutbox();
+    }, 60000); // every 1 minute
+    return () => clearInterval(interval);
+  }, []);
   // ------------------- AUTH SCREEN -------------------
   if (!user) {
     return (
