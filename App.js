@@ -2,12 +2,13 @@
 import * as SplashScreen from "expo-splash-screen";
 import { Asset } from "expo-asset";
 SplashScreen.preventAutoHideAsync();
-
+import * as SecureStore from "expo-secure-store";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import React, { useEffect, useState, useRef } from "react";
 import {
   View,
   Text,
-  TextInput,
+  TextInput,  
   TouchableOpacity,
   Alert,
   Platform,
@@ -23,7 +24,6 @@ import {
 import * as Location from "expo-location";
 import * as TaskManager from "expo-task-manager";
 import * as ImagePicker from "expo-image-picker";
-import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as IntentLauncher from "expo-intent-launcher";
 
 import { doRegister, doLogin } from "./src/auth";
@@ -56,6 +56,24 @@ TaskManager.defineTask(LOCATION_TASK, async ({ data, error }) => {
 
 async function flushOutbox() {
   if (!OUTBOX.length) return;
+
+  let token = null;
+  try {
+    token = await SecureStore.getItemAsync("auth_token");
+  } catch {}
+  if (!token) {
+    const profStr = await AsyncStorage.getItem("profile");
+    if (profStr) {
+      const prof = JSON.parse(profStr);
+      token = prof?.token || null;
+    }
+  }
+
+  if (!token) {
+    console.warn("⚠️ No auth token found; skipping upload");
+    return;
+  }
+
   const pts = OUTBOX.map((loc) => ({
     ts: loc.timestamp,
     lat: loc.coords.latitude,
@@ -65,11 +83,12 @@ async function flushOutbox() {
     heading: loc.coords.heading,
     provider: loc.provider,
   }));
+
   try {
     await API.post("/tracking/locations", { points: pts });
     OUTBOX = [];
   } catch (err) {
-    console.error("Upload failed:", err?.message || err);
+    console.error("Upload failed:", err?.response?.data || err?.message || err);
   }
 }
 
