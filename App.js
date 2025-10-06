@@ -101,6 +101,11 @@ export default function App() {
   const [phone, setPhone] = useState("");
   const [password, setPassword] = useState("");
   const [photoUri, setPhotoUri] = useState("");
+  const [clientMobile, setClientMobile] = useState("");
+  const [clientCurrentAddress, setClientCurrentAddress] = useState("");
+  const [clientPermanentAddress, setClientPermanentAddress] = useState("");
+  const [useSameAddress, setUseSameAddress] = useState(false);
+  const [visitLocation, setVisitLocation] = useState(null);
 
   // work/tracking
   const [tracking, setTracking] = useState(false);
@@ -346,8 +351,6 @@ export default function App() {
     }
   };
 
- 
-
   // ------------------- visit modal -------------------
   const openVisitPopup = () => setVisitVisible(true);
   const closeVisitPopup = () => {
@@ -374,30 +377,34 @@ export default function App() {
   };
 
   const submitVisit = async () => {
-    if (!clientName.trim()) {
-      Alert.alert("Missing info", "Please enter the client name.");
-      return;
-    }
-    if (!visitPhotoUri) {
-      Alert.alert(
-        "Missing photo",
-        "Please capture a live photo at the location."
-      );
-      return;
-    }
+    if (!clientName.trim()) return Alert.alert("Missing", "Enter client name");
+    if (!clientMobile.trim())
+      return Alert.alert("Missing", "Enter client mobile");
+    if (!clientCurrentAddress.trim())
+      return Alert.alert("Missing", "Enter current address");
+    if (!useSameAddress && !clientPermanentAddress.trim())
+      return Alert.alert("Missing", "Enter permanent address");
+    if (!visitPhotoUri) return Alert.alert("Missing", "Capture live photo");
+    if (!visitLocation)
+      return Alert.alert("Missing", "Please upload current location first");
+
     setVisitLoading(true);
     try {
-      const fg = await Location.requestForegroundPermissionsAsync();
-      if (fg.status !== "granted")
-        throw new Error("Location permission not granted");
-      const pos = await Location.getCurrentPositionAsync({
-        accuracy: Location.Accuracy.High,
-      });
-
-      const { latitude: lat, longitude: lon, accuracy: acc } = pos.coords || {};
-
+      const {
+        latitude: lat,
+        longitude: lon,
+        accuracy: acc,
+      } = visitLocation || {};
       const form = new FormData();
       form.append("clientName", clientName.trim());
+      form.append("clientMobile", clientMobile.trim());
+      form.append("currentAddress", clientCurrentAddress.trim());
+      form.append(
+        "permanentAddress",
+        useSameAddress
+          ? clientCurrentAddress.trim()
+          : clientPermanentAddress.trim()
+      );
       form.append("lat", String(lat));
       form.append("lon", String(lon));
       if (acc != null) form.append("acc", String(acc));
@@ -419,9 +426,7 @@ export default function App() {
       closeVisitPopup();
       showToast("✅ Client visit submitted");
     } catch (e) {
-      const msg =
-        e?.response?.data?.message || e?.message || "Failed to submit visit";
-      Alert.alert("Error", msg);
+      Alert.alert("Error", e?.response?.data?.message || e?.message);
     } finally {
       setVisitLoading(false);
     }
@@ -449,7 +454,7 @@ export default function App() {
     showToast("Logged out");
   };
 
-   useEffect(() => {
+  useEffect(() => {
     const interval = setInterval(() => {
       flushOutbox();
     }, 60000); // every 1 minute
@@ -735,14 +740,114 @@ export default function App() {
               <ScrollView showsVerticalScrollIndicator={false}>
                 <Text style={styles.modalTitle}>Client Visit</Text>
 
+                {/* ---- Client Basic ---- */}
                 <TextInput
-                  placeholder="Client name (required)"
+                  placeholder="Client Name (required)"
                   placeholderTextColor="#8B949E"
                   value={clientName}
                   onChangeText={setClientName}
                   style={styles.input}
                 />
 
+                <TextInput
+                  placeholder="Client Mobile Number"
+                  placeholderTextColor="#8B949E"
+                  keyboardType="phone-pad"
+                  value={clientMobile}
+                  onChangeText={setClientMobile}
+                  style={styles.input}
+                />
+
+                {/* ---- Address Fields ---- */}
+                <TextInput
+                  placeholder="Current Address"
+                  placeholderTextColor="#8B949E"
+                  value={clientCurrentAddress}
+                  onChangeText={setClientCurrentAddress}
+                  style={styles.input}
+                  multiline
+                />
+
+                <View
+                  style={{
+                    flexDirection: "row",
+                    alignItems: "center",
+                    marginBottom: 12,
+                  }}
+                >
+                  <TouchableOpacity
+                    onPress={() => {
+                      setUseSameAddress(!useSameAddress);
+                      if (!useSameAddress)
+                        setClientPermanentAddress(clientCurrentAddress);
+                    }}
+                    style={{
+                      width: 20,
+                      height: 20,
+                      borderRadius: 4,
+                      borderWidth: 1,
+                      borderColor: "#58A6FF",
+                      backgroundColor: useSameAddress
+                        ? "#58A6FF"
+                        : "transparent",
+                      marginRight: 8,
+                    }}
+                  />
+                  <Text style={{ color: "#F0F6FC", fontSize: 14 }}>
+                    Same as Current Address
+                  </Text>
+                </View>
+
+                {!useSameAddress && (
+                  <TextInput
+                    placeholder="Permanent Address"
+                    placeholderTextColor="#8B949E"
+                    value={clientPermanentAddress}
+                    onChangeText={setClientPermanentAddress}
+                    style={styles.input}
+                    multiline
+                  />
+                )}
+
+                {/* ---- Capture Location ---- */}
+                <TouchableOpacity
+                  style={[styles.cameraButton, { backgroundColor: "#30363D" }]}
+                  onPress={async () => {
+                    try {
+                      const fg =
+                        await Location.requestForegroundPermissionsAsync();
+                      if (fg.status !== "granted")
+                        throw new Error("Permission denied");
+                      const pos = await Location.getCurrentPositionAsync({
+                        accuracy: Location.Accuracy.High,
+                      });
+                      setVisitLocation(pos.coords);
+                      showToast("✅ Location captured");
+                    } catch (e) {
+                      Alert.alert("Location Error", e.message);
+                    }
+                  }}
+                >
+                  <Text style={styles.cameraButtonText}>
+                    📍 Upload Current Location
+                  </Text>
+                </TouchableOpacity>
+
+                {!!visitLocation?.latitude && (
+                  <Text
+                    style={{
+                      color: "#58A6FF",
+                      fontSize: 13,
+                      textAlign: "center",
+                      marginBottom: 8,
+                    }}
+                  >
+                    Lat: {visitLocation.latitude.toFixed(5)}, Lon:{" "}
+                    {visitLocation.longitude.toFixed(5)}
+                  </Text>
+                )}
+
+                {/* ---- Photo ---- */}
                 <TouchableOpacity
                   style={styles.cameraButton}
                   onPress={takeVisitPhoto}
@@ -769,20 +874,26 @@ export default function App() {
                 )}
 
                 <Text style={styles.infoText}>
-                  Location will be captured automatically from the device on
-                  submit.
+                  Ensure all fields are filled correctly before submission.
                 </Text>
 
+                {/* ---- Buttons ---- */}
                 <View style={styles.modalButtons}>
                   <TouchableOpacity
                     style={[
                       styles.submitButton,
-                      (!clientName.trim() || !visitPhotoUri || visitLoading) &&
+                      (!clientName.trim() ||
+                        !visitPhotoUri ||
+                        !visitLocation ||
+                        visitLoading) &&
                         styles.disabledButton,
                     ]}
                     onPress={submitVisit}
                     disabled={
-                      !clientName.trim() || !visitPhotoUri || visitLoading
+                      !clientName.trim() ||
+                      !visitPhotoUri ||
+                      !visitLocation ||
+                      visitLoading
                     }
                   >
                     <Text style={styles.submitButtonText}>
