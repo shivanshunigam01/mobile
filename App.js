@@ -44,9 +44,21 @@ TaskManager.defineTask(LOCATION_TASK, async ({ data, error }) => {
     console.error("Location task error:", error);
     return;
   }
+
   try {
     if (data?.locations?.length) {
-      OUTBOX.push(...data.locations);
+      const safe = data.locations.filter((loc) => {
+        const { latitude, longitude } = loc.coords;
+
+        if (!latitude || !longitude) return false;
+        if (latitude === 0 || longitude === 0) return false;
+        if (loc.mocked === true) return false; // ✅ BLOCK FAKE GPS
+
+        return true;
+      });
+
+      OUTBOX.push(...safe);
+
       if (OUTBOX.length >= 3) await flushOutbox();
     }
   } catch (e) {
@@ -61,6 +73,7 @@ async function flushOutbox() {
   try {
     token = await SecureStore.getItemAsync("auth_token");
   } catch {}
+
   if (!token) {
     const profStr = await AsyncStorage.getItem("profile");
     if (profStr) {
@@ -74,15 +87,28 @@ async function flushOutbox() {
     return;
   }
 
-  const pts = OUTBOX.map((loc) => ({
-    ts: loc.timestamp,
-    lat: loc.coords.latitude,
-    lon: loc.coords.longitude,
-    acc: loc.coords.accuracy,
-    speed: loc.coords.speed,
-    heading: loc.coords.heading,
-    provider: loc.provider,
-  }));
+  const pts = OUTBOX.map((loc) => {
+    const lat = loc.coords.latitude;
+    const lon = loc.coords.longitude;
+
+    // ✅ FINAL HARD BLOCK (0,0)
+    if (!lat || !lon || lat === 0 || lon === 0) return null;
+
+    return {
+      ts: loc.timestamp,
+      lat,
+      lon,
+      acc: loc.coords.accuracy,
+      speed: loc.coords.speed,
+      heading: loc.coords.heading,
+      provider: "gps", // ✅ FORCE GPS
+    };
+  }).filter(Boolean);
+
+  if (!pts.length) {
+    OUTBOX = []; // ✅ wipe bad data
+    return;
+  }
 
   try {
     await API.post("/tracking/locations", { points: pts });
@@ -274,7 +300,7 @@ export default function App() {
       throw new Error("Background permission denied.");
 
     await Location.startLocationUpdatesAsync(LOCATION_TASK, {
-      accuracy: Location.Accuracy.High,
+      accuracy: Location.Accuracy.Highest,
       timeInterval: 10000,
       distanceInterval: 10,
       foregroundService: {
@@ -303,7 +329,7 @@ export default function App() {
 
       // Start background tracking task
       await Location.startLocationUpdatesAsync(LOCATION_TASK, {
-        accuracy: Location.Accuracy.High,
+        accuracy: Location.Accuracy.Highest,
         timeInterval: 10000, // every 10 seconds
         distanceInterval: 10, // or every 10 meters
         foregroundService: {
@@ -819,10 +845,35 @@ export default function App() {
                       if (fg.status !== "granted")
                         throw new Error("Permission denied");
                       const pos = await Location.getCurrentPositionAsync({
-                        accuracy: Location.Accuracy.High,
+                        accuracy: Location.Accuracy.Highest,
                       });
+
+                      const { latitude, longitude } = pos.coords;
+
+                      // ✅ BLOCK INVALID VISIT LOCATION
+                      if (
+                        !latitude ||
+                        !longitude ||
+                        latitude === 0 ||
+                        longitude === 0
+                      ) {
+                        Alert.alert(
+                          "Invalid GPS",
+                          "GPS signal is weak. Please retry."
+                        );
+                        return;
+                      }
+
+                      if (pos.mocked === true) {
+                        Alert.alert(
+                          "Fake GPS Detected",
+                          "Disable mock location to continue."
+                        );
+                        return;
+                      }
+
                       setVisitLocation(pos.coords);
-                      showToast("✅ Location captured");
+                      showToast("✅ Valid location captured");
                     } catch (e) {
                       Alert.alert("Location Error", e.message);
                     }
